@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Mail: tongdongdong@outlook.com
-import base64
-import hashlib
-import hmac
 import random
 import time
-import operator
-import json
-import urllib.parse
-import urllib3
-from dns.qCloud import QcloudApi
+import requests
+from dns.qCloud import QcloudApiv3 # QcloudApiv3 DNSPod 的 API 更新了 By github@z0z0r4
 from dns.aliyun import AliApi
+from dns.huawei import HuaWeiApi
 from log import Logger
 import traceback
 
@@ -21,15 +16,21 @@ KEY = "o1zrmHAF"
 #CM:移动 CU:联通 CT:电信  AB:境外 DEF:默认
 #修改需要更改的dnspod域名和子域名
 DOMAINS = {
-    "hostmonit.com": {"@": ["CM","CU","CT"], "shop": ["CM", "CU", "CT"], "stock": ["CM","CU","CT"]},
-    "xxxx.me": {"@": ["CM","CU","CT"], "vv": ["CM","CU","CT"]}
+    "hostxxnit.com": {"@": ["CM","CU","CT"], "shop": ["CM", "CU", "CT"], "stock": ["CM","CU","CT"]},
+    "484848.xyz": {"@": ["CM","CU","CT"], "shop": ["CM","CU","CT"]}
 }
 
 #解析生效条数 免费的DNSPod相同线路最多支持2条解析
 AFFECT_NUM = 2
 
-#DNS服务商 如果使用DNSPod改为1 如果使用阿里云解析改成2
+#DNS服务商 如果使用DNSPod改为1 如果使用阿里云解析改成2  如果使用华为云解析改成3
 DNS_SERVER = 1
+
+#如果使用华为云解析 需要从API凭证-项目列表中获取
+REGION_HW = 'cn-east-3'
+
+#如果使用阿里云解析 REGION出现错误再修改 默认不需要修改 https://help.aliyun.com/document_detail/198326.html
+REGION_ALI = 'cn-hongkong'
 
 #解析生效时间，默认为600秒 如果不是DNS付费版用户 不要修改!!!
 TTL = 600
@@ -40,22 +41,24 @@ TYPE = 'v4'
 #API 密钥
 #腾讯云后台获取 https://console.cloud.tencent.com/cam/capi
 #阿里云后台获取 https://help.aliyun.com/document_detail/53045.html?spm=a2c4g.11186623.2.11.2c6a2fbdh13O53  注意需要添加DNS控制权限 AliyunDNSFullAccess
-SECRETID = 'AKIDVmxtxxxxxxxxxxxfo8CzfjgN'
-SECRETKEY = 'ZrVszqxxxxxxxxxxjOp1zVl'
+#华为云后台获取 https://support.huaweicloud.com/devg-apisign/api-sign-provide-aksk.html
+SECRETID = 'WTTCWxxxxxxxxxxxxxxxxxxxxx84O0V'
+SECRETKEY = 'GXkG6D4X1Nxxxxxxxxxxxxxxxxxxxxx4lRg6lT'
 
 log_cf2dns = Logger('cf2dns.log', level='debug') 
-urllib3.disable_warnings()
 
 def get_optimization_ip():
     try:
-        http = urllib3.PoolManager()
         headers = headers = {'Content-Type': 'application/json'}
         data = {"key": KEY, "type": TYPE}
-        data = json.dumps(data).encode()
-        response = http.request('POST','https://api.hostmonit.com/get_optimization_ip',body=data, headers=headers)
-        return json.loads(response.data.decode('utf-8'))
+        response = requests.post('https://api.hostmonit.com/get_optimization_ip', json=data, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            log_cf2dns.logger.error("CHANGE OPTIMIZATION IP ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: REQUEST STATUS CODE IS NOT 200")
+            return None
     except Exception as e:
-        print(e)
+        log_cf2dns.logger.error("CHANGE OPTIMIZATION IP ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: " + str(e))
         return None
 
 def changeDNS(line, s_info, c_info, domain, sub_domain, cloud):
@@ -64,20 +67,10 @@ def changeDNS(line, s_info, c_info, domain, sub_domain, cloud):
         recordType = "AAAA"
     else:
         recordType = "A"
-    
-    if line == "CM":
-        line = "移动"
-    elif line == "CU":
-        line = "联通"
-    elif line == "CT":
-        line = "电信"
-    elif line == "AB":
-        line = "境外"
-    elif line == "DEF":
-        line = "默认"
-    else:
-        log_cf2dns.logger.error("CHANGE DNS ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: LINE ERROR")
-        return
+
+    lines = {"CM": "移动", "CU": "联通", "CT": "电信", "AB": "境外", "DEF": "默认"}
+    line = lines[line]
+
     try:
         create_num = AFFECT_NUM - len(s_info)
         if create_num == 0:
@@ -163,30 +156,18 @@ def main(cloud):
                         ab_info = []
                         def_info = []
                         for record in ret["data"]["records"]:
+                            info = {}
+                            info["recordId"] = record["id"]
+                            info["value"] = record["value"]
                             if record["line"] == "移动":
-                                info = {}
-                                info["recordId"] = record["id"]
-                                info["value"] = record["value"]
                                 cm_info.append(info)
-                            if record["line"] == "联通":
-                                info = {}
-                                info["recordId"] = record["id"]
-                                info["value"] = record["value"]
+                            elif record["line"] == "联通":
                                 cu_info.append(info)
-                            if record["line"] == "电信":
-                                info = {}
-                                info["recordId"] = record["id"]
-                                info["value"] = record["value"]
+                            elif record["line"] == "电信":
                                 ct_info.append(info)
-                            if record["line"] == "境外":
-                                info = {}
-                                info["recordId"] = record["id"]
-                                info["value"] = record["value"]
+                            elif record["line"] == "境外":
                                 ab_info.append(info)
-                            if record["line"] == "默认":
-                                info = {}
-                                info["recordId"] = record["id"]
-                                info["value"] = record["value"]
+                            elif record["line"] == "默认":
                                 def_info.append(info)
                         for line in lines:
                             if line == "CM":
@@ -205,7 +186,9 @@ def main(cloud):
 
 if __name__ == '__main__':
     if DNS_SERVER == 1:
-        cloud = QcloudApi(SECRETID, SECRETKEY)
+        cloud = QcloudApiv3(SECRETID, SECRETKEY)
     elif DNS_SERVER == 2:
-        cloud = AliApi(SECRETID, SECRETKEY)
+        cloud = AliApi(SECRETID, SECRETKEY, REGION_ALI)
+    elif DNS_SERVER == 3:
+        cloud = HuaWeiApi(SECRETID, SECRETKEY, REGION_HW)
     main(cloud)
